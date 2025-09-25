@@ -4,7 +4,6 @@ from discord import app_commands
 import asyncio
 import logging
 import os
-import time
 from datetime import datetime, timedelta, date
 from typing import Dict, Any, Optional, List
 from pathlib import Path
