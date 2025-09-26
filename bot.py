@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, date, time
+import time as pytime
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 
@@ -521,12 +522,11 @@ class ReplyTrackerBot(commands.Bot):
         embed.add_field(
             name="QUICK SETUP GUIDE",
             value=
-            "1. Your X Username (without @)\n2. Daily reply target (how many per day)\n3. Start date (I'll create 60 days automatically)",
+            "1. Client X Username (without @)\n2. Daily reply target (how many per day)\n3. Start date (I'll create 60 days automatically)",
             inline=False)
-        embed.add_field(
-            name="Step 1 of 3",
-            value="What's your **X (Twitter) username**? (without @)",
-            inline=False)
+        embed.add_field(name="Step 1 of 3",
+                        value="What's your **Client username**? (without @)",
+                        inline=False)
         embed.add_field(
             name="Example",
             value="If your X profile is @johndoe123, just type: `johndoe123`",
@@ -907,7 +907,7 @@ class ReplyTrackerBot(commands.Bot):
     @tasks.loop(hours=1)
     async def cleanup_task(self):
         try:
-            current_time = time.time()
+            current_time = pytime.time()
             expired_cache = []
             for user_id, cache_data in list(self.user_cache.items()):
                 if current_time - cache_data.get('cached_at',

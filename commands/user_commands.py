@@ -289,6 +289,6 @@ class UserCommands(commands.Cog):
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
 
-    async def setup(bot):
-        """Required function to add this cog to the bot"""
-        await bot.add_cog(UserCommands(bot))
+async def setup(bot):
+    """Required function to add this cog to the bot"""
+    await bot.add_cog(UserCommands(bot))
