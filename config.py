@@ -90,9 +90,11 @@ class BotConfig:
 
     @property
     def database_path(self) -> str:
-        """Get the appropriate database path/URL"""
+        """Get the appropriate database path/URL - Compatible with original bot code"""
         if self.is_postgresql:
-            return self.database_url
+            # For PostgreSQL, return the URL but the DatabaseManager needs to handle it differently
+            # We'll handle this in the DatabaseManager
+            return self.database_url if self.database_url else self.sqlite_database_path
         else:
             return self.sqlite_database_path
 
@@ -125,7 +127,7 @@ class BotConfig:
 Config = BotConfig
 
 def get_config() -> BotConfig:
-    """Get validated configuration"""
+    """Get validated configuration - This is what main.py should call"""
     config = BotConfig.from_environment()
 
     if not config.validate():
