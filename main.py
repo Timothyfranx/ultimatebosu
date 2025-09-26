@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from discord.ext import commands
-from config import Config
+from config import Config, get_config  # Import both
 from bot import ReplyTrackerBot
 
 # Load environment variables
@@ -25,8 +25,8 @@ async def main():
     """Main entry point for the bot"""
     logger.info("Starting bot initialization...")
     
-    # Initialize config
-    config = Config()
+    # Initialize config - Use the proper method
+    config = get_config()  # This calls Config.from_environment()
     
     # Create directories if they don't exist
     excel_dir = Path(config.excel_directory)
