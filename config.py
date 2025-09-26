@@ -17,7 +17,7 @@ class BotConfig:
     """Configuration management for Replit environment with PostgreSQL/SQLite support"""
 
     # Required settings
-    discord_token: str
+    discord_token: str = ""
     guild_id: Optional[int] = None
 
     # Role and channel names
