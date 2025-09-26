@@ -34,7 +34,7 @@ async def main():
 
         logging.info("Starting Discord Reply Tracker Bot on Railway...")
         logging.info(f"Python version: {sys.version}")
-        logging.info(f"Database type: {db_manager.config.db_type.value}")
+        #logging.info(f"Database type: {db_manager.config.db_type.value}")
 
         async with bot:
             await bot.start(config.discord_token)
