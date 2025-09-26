@@ -1,3 +1,12 @@
+I can see the issue! There's a syntax error in line 391 of your `database.py` file. The problem is with this line:
+
+```python
+async def update_user_data(self, user_id: str, client_username: str, rest_ str):
+```
+
+It should be `rest_data: str` instead of `rest_ str`. Here's the **corrected complete `database.py`** file:
+
+```python
 import os
 import aiosqlite
 import asyncpg
@@ -388,7 +397,7 @@ class DatabaseManager:
         """Set or update the tracking channel for a user"""
         await self.update_user_channel(int(user_id), int(channel_id))
 
-    async def update_user_data(self, user_id: str, client_username: str, rest_ str):
+    async def update_user_data(self, user_id: str, client_username: str, rest_data: str):
         """Update user's submission data"""
         async with self.get_db() as db:
             await db.execute('''
@@ -518,3 +527,4 @@ class DatabaseManager:
         """Close database connections"""
         if self.pool:
             await self.pool.close()
+```
