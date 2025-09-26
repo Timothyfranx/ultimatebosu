@@ -79,39 +79,22 @@ class AdvancedDuplicateScanner:
     async def _scan_single_user(self, discord_id: int) -> Optional[Dict]:
         """Scan individual user for internal duplicates"""
         try:
-            async with self.db.get_db() as db:
-                async with db.execute(
-                        '''
-                    SELECT u.id, u.username, u.x_username, ts.id as session_id, ts.target_replies
-                    FROM users u
-                    JOIN tracking_sessions ts ON u.id = ts.user_id
-                    WHERE u.discord_id = ? AND ts.status = 'active'
-                    ORDER BY ts.created_at DESC
-                    LIMIT 1
-                ''', (discord_id, )) as cursor:
-                    user_data = await cursor.fetchone()
+            # Get user session using async method
+            user_data = await self.db.get_user_session(discord_id)
+            if not user_data:
+                return None
 
-                if not user_data:
-                    return None
-
-                # Get all replies for this user and include username in the result rows
-                async with db.execute(
-                        '''
-                    SELECT date, url, reply_number, created_at
-                    FROM replies
-                    WHERE session_id = ? AND is_valid = 1
-                    ORDER BY date, reply_number
-                ''', (user_data['session_id'], )) as cursor:
-                    replies = await cursor.fetchall()
+            # Get all replies for this user using async method
+            replies = await self.db.get_user_replies_for_session(user_data['session_id'])
 
             # Pass username explicitly to fix the missing user_name in DuplicateInfo
             duplicates = self._find_internal_duplicates(
-                replies, user_data['username'])
+                replies, user_data.get('username', 'Unknown'))
 
             return {
                 'discord_id': discord_id,
-                'username': user_data['username'],
-                'x_username': user_data['x_username'],
+                'username': user_data.get('username', 'Unknown'),
+                'x_username': user_data.get('x_username', 'N/A'),
                 'total_replies': len(replies),
                 'internal_duplicates': duplicates,
                 'duplicate_count': len(duplicates)
@@ -135,7 +118,7 @@ class AdvancedDuplicateScanner:
         tweet_id_tracker = defaultdict(list)
 
         for reply in replies:
-            url = reply['url']
+            url = reply.get('url', '')
             tweet_id = self.extract_tweet_id(url)
 
             url_tracker[url].append(reply)
@@ -149,9 +132,9 @@ class AdvancedDuplicateScanner:
                     DuplicateInfo(
                         tweet_id=self.extract_tweet_id(url) or 'unknown',
                         url=url,
-                        dates=[reply['date'] for reply in reply_list],
+                        dates=[reply.get('date', '') for reply in reply_list],
                         reply_numbers=[
-                            reply['reply_number'] for reply in reply_list
+                            reply.get('reply_number', 0) for reply in reply_list
                         ],
                         user_name=username))
 
@@ -163,29 +146,22 @@ class AdvancedDuplicateScanner:
         try:
             cross_duplicates = []
 
-            async with self.db.get_db() as db:
-                placeholders = ','.join('?' * len(user_ids))
-                async with db.execute(
-                        f'''
-                    SELECT u.username, u.x_username, r.url, r.date, r.reply_number
-                    FROM replies r
-                    JOIN tracking_sessions ts ON r.session_id = ts.id
-                    JOIN users u ON ts.user_id = u.id
-                    WHERE u.discord_id IN ({placeholders}) AND r.is_valid = 1
-                    ORDER BY r.url
-                ''', user_ids) as cursor:
-                    all_replies = await cursor.fetchall()
+            # Get all replies for specified users using async method
+            all_replies = await self.db.get_replies_for_multiple_users(user_ids)
 
             tweet_groups = defaultdict(list)
             for reply in all_replies:
-                tweet_id = self.extract_tweet_id(reply['url'])
+                url = reply.get('url', '')
+                tweet_id = self.extract_tweet_id(url)
                 if tweet_id:
                     tweet_groups[tweet_id].append(reply)
 
             for tweet_id, reply_list in tweet_groups.items():
                 users_with_tweet = defaultdict(list)
                 for reply in reply_list:
-                    user_key = f"{reply['username']} (@{reply['x_username']})"
+                    username = reply.get('username', 'Unknown')
+                    x_username = reply.get('x_username', 'N/A')
+                    user_key = f"{username} (@{x_username})"
                     users_with_tweet[user_key].append(reply)
 
                 if len(users_with_tweet) > 1:
@@ -193,7 +169,7 @@ class AdvancedDuplicateScanner:
                         'tweet_id':
                         tweet_id,
                         'url':
-                        reply_list[0]['url'],
+                        reply_list[0].get('url', ''),
                         'users_affected':
                         dict(users_with_tweet),
                         'total_submissions':
@@ -310,3 +286,39 @@ class AdvancedDuplicateScanner:
             sheet.cell(row=row, column=3, value='; '.join(users_list))
             sheet.cell(row=row, column=4, value=duplicate['total_submissions'])
             row += 1
+
+    # Additional methods that need to be implemented in DatabaseManager
+    async def get_user_replies_for_session(self, session_id: int) -> List[Dict]:
+        """Get all replies for a specific session"""
+        try:
+            async with self.db.get_db() as db:
+                async with db.execute('''
+                    SELECT date, url, reply_number, created_at
+                    FROM replies
+                    WHERE session_id = ? AND is_valid = 1
+                    ORDER BY date, reply_number
+                ''', (session_id,)) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting user replies for session {session_id}: {e}")
+            return []
+
+    async def get_replies_for_multiple_users(self, user_ids: List[int]) -> List[Dict]:
+        """Get replies for multiple users"""
+        try:
+            async with self.db.get_db() as db:
+                placeholders = ','.join('?' * len(user_ids))
+                async with db.execute(f'''
+                    SELECT u.username, u.x_username, r.url, r.date, r.reply_number
+                    FROM replies r
+                    JOIN tracking_sessions ts ON r.session_id = ts.id
+                    JOIN users u ON ts.user_id = u.id
+                    WHERE u.discord_id IN ({placeholders}) AND r.is_valid = 1
+                    ORDER BY r.url
+                ''', user_ids) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting replies for multiple users: {e}")
+            return []
