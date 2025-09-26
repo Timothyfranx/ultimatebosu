@@ -1,57 +1,64 @@
 import asyncio
 import logging
 import os
-import sys
 from pathlib import Path
+from dotenv import load_dotenv
+from discord.ext import commands
+from config import Config
+from bot import ReplyTrackerBot
 
-# Configure logging for Railway
+# Load environment variables
+load_dotenv()
+
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    stream=sys.stdout  # Railway captures stdout
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
 )
-
-# Import your components
-from config import get_config
-from bot import ReplyTrackerBot
-from database import DatabaseManager
-
+logger = logging.getLogger(__name__)
 
 async def main():
-    """Main function optimized for Railway"""
+    """Main entry point for the bot"""
+    logger.info("Starting bot initialization...")
+    
+    # Initialize config
+    config = Config()
+    
+    # Create directories if they don't exist
+    excel_dir = Path(config.excel_directory)
+    excel_dir.mkdir(exist_ok=True)
+    logger.info(f"Excel directory: {excel_dir}")
+    
+    # Check if running on Railway (has DATABASE_URL)
+    is_on_railway = bool(os.getenv('DATABASE_URL'))
+    if is_on_railway:
+        logger.info("Detected Railway environment - using PostgreSQL")
+    else:
+        logger.info("Using local SQLite database")
+    
+    # Initialize bot
+    bot = ReplyTrackerBot(config)
+    
     try:
-        config = get_config()
-
-        # Create database manager (will auto-detect PostgreSQL from DATABASE_URL)
-        db_manager = DatabaseManager(config.database_path)
-
-        # Initialize bot with Railway database
-        bot = ReplyTrackerBot(config)
-        bot.db = db_manager  # Override with Railway database
-
-        # Create necessary directories
-        Path(config.excel_directory).mkdir(exist_ok=True)
-
-        logging.info("Starting Discord Reply Tracker Bot on Railway...")
-        logging.info(f"Python version: {sys.version}")
-        #logging.info(f"Database type: {db_manager.config.db_type.value}")
-
-        async with bot:
-            await bot.start(config.discord_token)
-
+        # Start the bot
+        logger.info("Starting bot connection...")
+        await bot.start(config.discord_token)
     except KeyboardInterrupt:
-        logging.info("Bot stopped by user")
+        logger.info("Keyboard interrupt received, shutting down...")
     except Exception as e:
-        logging.error(f"Fatal error: {e}", exc_info=True)
-        sys.exit(1)
-
+        logger.error(f"Fatal error during bot execution: {e}", exc_info=True)
+    finally:
+        logger.info("Closing bot...")
+        await bot.close()
 
 if __name__ == "__main__":
-    # Railway compatibility
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logging.info("Bot shutdown requested")
+        print("\nBot shutdown interrupted by user")
     except Exception as e:
-        logging.error(f"Critical error: {e}", exc_info=True)
-        sys.exit(1)
+        logger.error(f"Error running bot: {e}", exc_info=True)
