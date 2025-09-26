@@ -1,12 +1,3 @@
-I can see the issue! There's a syntax error in line 391 of your `database.py` file. The problem is with this line:
-
-```python
-async def update_user_data(self, user_id: str, client_username: str, rest_ str):
-```
-
-It should be `rest_data: str` instead of `rest_ str`. Here's the **corrected complete `database.py`** file:
-
-```python
 import os
 import aiosqlite
 import asyncpg
@@ -527,4 +518,3 @@ class DatabaseManager:
         """Close database connections"""
         if self.pool:
             await self.pool.close()
-```
