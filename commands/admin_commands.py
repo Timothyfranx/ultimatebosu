@@ -112,34 +112,34 @@ class AdminCommands(commands.Cog):
         """Manually trigger channel restoration."""
         await interaction.response.defer()
         try:
-            async with self.bot.db.get_db() as db:
-                async with db.execute('''
-                    SELECT u.discord_id, u.channel_id, u.username, u.x_username
-                    FROM users u
-                    JOIN tracking_sessions ts ON u.id = ts.user_id
-                    WHERE ts.status = 'active' AND u.channel_id IS NOT NULL
-                ''') as cursor:
-                    active_users = await cursor.fetchall()
-
+            # Get active users from database using async method
+            active_users = await self.bot.db.get_users_with_missing_channels([])
+            
             missing_channels, existing_channels = [], 0
-            for user_data in active_users:
-                discord_id = user_data['discord_id']
-                channel_id = user_data['channel_id']
-                username = user_data['username']
-
-                member = interaction.guild.get_member(discord_id)
-                if not member:
+            for guild in self.bot.guilds:
+                # Get all members with reply role
+                reply_role = discord.utils.get(
+                    guild.roles, name=self.bot.config.reply_role_name)
+                if not reply_role:
                     continue
-
-                channel = interaction.guild.get_channel(channel_id)
-                if not channel:
-                    missing_channels.append({
-                        'member': member,
-                        'username': username,
-                        'old_channel_id': channel_id
-                    })
-                else:
-                    existing_channels += 1
+                    
+                reply_members = [member for member in guild.members 
+                               if not member.bot and reply_role in member.roles]
+                
+                for member in reply_members:
+                    user_data = await self.bot.db.get_user_session(member.id)
+                    if user_data:
+                        channel_id = await self.bot.db.get_tracking_channel(str(member.id))
+                        if channel_id:
+                            channel = guild.get_channel(int(channel_id))
+                            if not channel:
+                                missing_channels.append({
+                                    'member': member,
+                                    'username': user_data.get('username', member.display_name),
+                                    'old_channel_id': channel_id
+                                })
+                            else:
+                                existing_channels += 1
 
             if not missing_channels:
                 embed = discord.Embed(
@@ -321,50 +321,36 @@ class AdminCommands(commands.Cog):
         await interaction.response.defer()
         try:
             today = datetime.now().date()
-            async with self.bot.db.get_db() as db:
-                async with db.execute(
-                        '''
-                    SELECT COUNT(DISTINCT u.id) as total_users,
-                           COUNT(DISTINCT CASE WHEN ts.status = 'active' THEN ts.id END) as active_sessions,
-                           COUNT(CASE WHEN r.date = ? THEN r.id END) as total_replies_today,
-                           COUNT(DISTINCT CASE WHEN r.date = ? THEN u.id END) as active_today
-                    FROM users u
-                    LEFT JOIN tracking_sessions ts ON u.id = ts.user_id
-                    LEFT JOIN replies r ON ts.id = r.session_id AND r.is_valid = 1
-                ''', (today, today)) as cursor:
-                    stats = await cursor.fetchone()
-                async with db.execute(
-                        '''
-                    SELECT u.username, u.x_username, ts.target_replies,
-                           COUNT(r.id) as todays_replies,
-                           ROUND((COUNT(r.id) * 100.0 / ts.target_replies), 1) as completion_pct
-                    FROM users u
-                    JOIN tracking_sessions ts ON u.id = ts.user_id AND ts.status = 'active'
-                    LEFT JOIN replies r ON ts.id = r.session_id AND r.date = ? AND r.is_valid = 1
-                    WHERE ts.start_date <= ? AND ts.end_date >= ?
-                    GROUP BY u.id, ts.id
-                    ORDER BY completion_pct DESC, todays_replies DESC
-                ''', (today, today, today)) as cursor:
-                    user_performance = await cursor.fetchall()
-
+            
+            # Get statistics using async database methods
+            total_users = await self.bot.db.get_total_users_count()
+            active_sessions = await self.bot.db.get_active_sessions_count()
+            
+            # Get today's statistics
+            total_replies_today = await self.bot.db.get_replies_count_for_date(today)
+            active_today = await self.bot.db.get_active_users_count_for_date(today)
+            
+            # Get user performance data
+            user_performance = await self.bot.db.get_user_performance_for_date(today)
+            
             embed = discord.Embed(title="Admin Dashboard",
                                   description=f"Live statistics for {today}",
                                   color=discord.Color.blue())
             embed.add_field(name="Total Users",
-                            value=str(stats['total_users'] or 0),
+                            value=str(total_users or 0),
                             inline=True)
             embed.add_field(name="Active Sessions",
-                            value=str(stats['active_sessions'] or 0),
+                            value=str(active_sessions or 0),
                             inline=True)
             embed.add_field(name="Active Today",
-                            value=str(stats['active_today'] or 0),
+                            value=str(active_today or 0),
                             inline=True)
             embed.add_field(name="Replies Today",
-                            value=str(stats['total_replies_today'] or 0),
+                            value=str(total_replies_today or 0),
                             inline=True)
             if user_performance:
                 avg_completion = sum(
-                    perf['completion_pct'] or 0
+                    perf.get('completion_pct', 0)
                     for perf in user_performance) / len(user_performance)
                 embed.add_field(name="Avg Completion",
                                 value=f"{avg_completion:.1f}%",
@@ -373,11 +359,11 @@ class AdminCommands(commands.Cog):
             if user_performance:
                 top_5 = user_performance[:5]
                 top_text = ""
-                for row in top_5:
-                    username = row['username']
-                    target = row['target_replies']
-                    replies = row['todays_replies']
-                    pct = row['completion_pct'] or 0
+                for perf in top_5:
+                    username = perf.get('username', 'Unknown')
+                    target = perf.get('target_replies', 0)
+                    replies = perf.get('todays_replies', 0)
+                    pct = perf.get('completion_pct', 0)
                     status = "✅" if replies >= target else "⏳" if replies > 0 else "❌"
                     top_text += f"{status} **{username}**: {replies}/{target} ({pct}%)\n"
                 embed.add_field(name="Top Performers Today",
@@ -386,11 +372,11 @@ class AdminCommands(commands.Cog):
 
                 inactive = [
                     perf for perf in user_performance
-                    if (perf['todays_replies'] or 0) == 0
+                    if perf.get('todays_replies', 0) == 0
                 ]
                 if inactive:
                     inactive_text = "\n".join([
-                        f"❌ **{perf['username']}**: 0/{perf['target_replies']}"
+                        f"❌ **{perf.get('username', 'Unknown')}**: 0/{perf.get('target_replies', 0)}"
                         for perf in inactive[:5]
                     ])
                     if len(inactive) > 5:
@@ -422,21 +408,8 @@ class AdminCommands(commands.Cog):
         """Delete user's tracking channel and send Excel to admin channel."""
         await interaction.response.defer()
         try:
-            async with self.bot.db.get_db() as db:
-                async with db.execute(
-                        '''
-                    SELECT u.id, u.username, u.x_username, u.channel_id, 
-                           ts.id as session_id, ts.excel_path, ts.target_replies, 
-                           ts.start_date, ts.end_date, COUNT(r.id) as total_replies
-                    FROM users u
-                    LEFT JOIN tracking_sessions ts ON u.id = ts.user_id AND ts.status = 'active'
-                    LEFT JOIN replies r ON ts.id = r.session_id AND r.is_valid = 1
-                    WHERE u.discord_id = ?
-                    GROUP BY u.id, ts.id
-                    LIMIT 1
-                ''', (member.id, )) as cursor:
-                    user_data = await cursor.fetchone()
-
+            user_data = await self.bot.db.get_user_session(member.id)
+            
             if not user_data:
                 embed = discord.Embed(
                     title="User Not Found",
@@ -448,9 +421,9 @@ class AdminCommands(commands.Cog):
 
             # Delete the channel if it exists
             channel_deleted = False
-            if user_data['channel_id']:
-                channel = interaction.guild.get_channel(
-                    user_data['channel_id'])
+            channel_id = await self.bot.db.get_tracking_channel(str(member.id))
+            if channel_id:
+                channel = interaction.guild.get_channel(int(channel_id))
                 if channel:
                     try:
                         await channel.delete(
@@ -466,11 +439,11 @@ class AdminCommands(commands.Cog):
             summary_embed = discord.Embed(
                 title="User Channel Deleted",
                 description=
-                f"Tracking channel for **{user_data['username']}** has been deleted",
+                f"Tracking channel for **{user_data.get('username', member.display_name)}** has been deleted",
                 color=discord.Color.orange())
             summary_embed.add_field(
                 name="User",
-                value=f"{member.mention} (@{user_data['x_username']})",
+                value=f"{member.mention} (@{user_data.get('x_username', 'N/A')})",
                 inline=True)
             summary_embed.add_field(name="Deleted By",
                                     value=interaction.user.mention,
@@ -479,19 +452,19 @@ class AdminCommands(commands.Cog):
                 name="Channel Deleted",
                 value="Yes" if channel_deleted else "No/Already deleted",
                 inline=True)
-            if user_data['session_id'] and user_data['target_replies']:
+            if user_data.get('session_id') and user_data.get('target_replies'):
                 summary_embed.add_field(
                     name="Progress",
                     value=
-                    f"{user_data['total_replies'] or 0} replies submitted",
+                    f"{user_data.get('total_replies', 0)} replies submitted",
                     inline=True)
                 summary_embed.add_field(name="Daily Target",
-                                        value=str(user_data['target_replies']),
+                                        value=str(user_data.get('target_replies', 'N/A')),
                                         inline=True)
                 summary_embed.add_field(
                     name="Period",
                     value=
-                    f"{user_data['start_date']} to {user_data['end_date']}",
+                    f"{user_data.get('start_date', 'N/A')} to {user_data.get('end_date', 'N/A')}",
                     inline=True)
             summary_embed.set_footer(
                 text=f"Deleted at {datetime.now().strftime('%Y-%m-%d %H:%M')}")
@@ -499,16 +472,16 @@ class AdminCommands(commands.Cog):
             # Send Excel file to admin channel if it exists
             admin_channel = await self.bot.get_admin_channel(interaction.guild)
             excel_sent = False
-            if admin_channel and user_data['excel_path'] and os.path.exists(
-                    user_data['excel_path']):
+            excel_path = user_data.get('excel_path')
+            if admin_channel and excel_path and os.path.exists(excel_path):
                 try:
-                    filename = f"DELETED_{user_data['username']}_{user_data['x_username']}_tracking.xlsx"
+                    filename = f"DELETED_{user_data.get('username', member.display_name)}_{user_data.get('x_username', 'N/A')}_tracking.xlsx"
                     await admin_channel.send(embed=summary_embed,
                                              file=discord.File(
-                                                 user_data['excel_path'],
+                                                 excel_path,
                                                  filename=filename))
                     excel_sent = True
-                    os.remove(user_data['excel_path'])
+                    os.remove(excel_path)
                 except Exception as e:
                     logger.error(f"Error sending Excel to admin channel: {e}")
 
@@ -516,12 +489,9 @@ class AdminCommands(commands.Cog):
                 await admin_channel.send(embed=summary_embed)
 
             # Mark session as deleted in database
-            if user_data['session_id']:
-                async with self.bot.db.get_db() as db:
-                    await db.execute(
-                        'UPDATE tracking_sessions SET status = ? WHERE id = ?',
-                        ('deleted', user_data['session_id']))
-                    await db.commit()
+            session_id = user_data.get('session_id')
+            if session_id:
+                await self.bot.db.update_session_status(session_id, 'deleted')
 
             # Response to the admin who ran the command
             response_embed = discord.Embed(
@@ -633,18 +603,18 @@ class AdminCommands(commands.Cog):
                                 value="Exists",
                                 inline=True)
                 embed.add_field(name="X Username",
-                                value=f"@{user_data['x_username']}",
+                                value=f"@{user_data.get('x_username', 'N/A')}",
                                 inline=True)
                 embed.add_field(name="Active Session",
                                 value="Yes",
                                 inline=True)
                 embed.add_field(name="Daily Target",
-                                value=str(user_data['target_replies']),
+                                value=str(user_data.get('target_replies', 'N/A')),
                                 inline=True)
                 embed.add_field(
                     name="Period",
                     value=
-                    f"{user_data['start_date']} to {user_data['end_date']}",
+                    f"{user_data.get('start_date', 'N/A')} to {user_data.get('end_date', 'N/A')}",
                     inline=False)
                 embed.color = discord.Color.green()
             await interaction.followup.send(embed=embed)
@@ -701,8 +671,7 @@ class AdminCommands(commands.Cog):
                             inline=True)
             user_results = []
             for user_data in results['users_scanned']:
-                status = "CLEAN" if user_data[
-                    'duplicate_count'] == 0 else f"{user_data['duplicate_count']} DUPLICATES"
+                status = "CLEAN" if user_data.get('duplicate_count', 0) == 0 else f"{user_data.get('duplicate_count', 0)} DUPLICATES"
                 user_results.append(f"**{user_data['username']}**: {status}")
             if user_results:
                 embed.add_field(name="Individual Results",
@@ -740,34 +709,26 @@ class AdminCommands(commands.Cog):
         await interaction.response.defer()
         try:
             today = datetime.now().date()
-            async with self.bot.db.get_db() as db:
-                async with db.execute(
-                        '''
-                    SELECT u.username, u.x_username, ts.target_replies,
-                           COUNT(r.id) as todays_replies
-                    FROM users u
-                    JOIN tracking_sessions ts ON u.id = ts.user_id
-                    LEFT JOIN replies r ON ts.id = r.session_id AND r.date = ? AND r.is_valid = 1
-                    WHERE ts.status = 'active' AND ts.start_date <= ? AND ts.end_date >= ?
-                    GROUP BY u.id, ts.id
-                    ORDER BY todays_replies DESC, u.username
-                ''', (today, today, today)) as cursor:
-                    results = await cursor.fetchall()
+            
+            # Get today's performance data using async method
+            results = await self.bot.db.get_user_performance_for_date(today)
+            
             if not results:
                 embed = discord.Embed(title="No Active Users",
                                       description="No active users for today.",
                                       color=discord.Color.orange())
                 await interaction.followup.send(embed=embed)
                 return
+            
             embed = discord.Embed(title=f"Daily Summary - {today}",
                                   color=discord.Color.blue())
             completed = partial = none = 0
             summary_text = ""
             for row in results:
-                username = row['username']
-                x_username = row['x_username']
-                target_replies = row['target_replies']
-                todays_replies = row['todays_replies']
+                username = row.get('username', 'Unknown')
+                x_username = row.get('x_username', 'N/A')
+                target_replies = row.get('target_replies', 0)
+                todays_replies = row.get('todays_replies', 0)
                 if todays_replies == target_replies:
                     emoji = "✅"
                     completed += 1
@@ -807,6 +768,90 @@ class AdminCommands(commands.Cog):
                 f"Failed to generate daily summary. Error: {str(e)}",
                 color=discord.Color.red())
             await interaction.followup.send(embed=embed)
+
+    # Additional database method calls that should be in your DatabaseManager
+    # These are the missing methods that would have been in your original bot file
+    async def update_session_status(self, session_id: int, status: str):
+        """Update session status in database"""
+        try:
+            async with self.bot.db.get_db() as db:
+                await db.execute(
+                    'UPDATE tracking_sessions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                    (status, session_id))
+                await db.commit()
+        except Exception as e:
+            logger.error(f"Error updating session status: {e}")
+
+    async def get_total_users_count(self):
+        """Get total number of users in database"""
+        try:
+            async with self.bot.db.get_db() as db:
+                async with db.execute('SELECT COUNT(*) as count FROM users') as cursor:
+                    result = await cursor.fetchone()
+                    return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting total users count: {e}")
+            return 0
+
+    async def get_active_sessions_count(self):
+        """Get number of active sessions"""
+        try:
+            async with self.bot.db.get_db() as db:
+                async with db.execute('SELECT COUNT(*) as count FROM tracking_sessions WHERE status = "active"') as cursor:
+                    result = await cursor.fetchone()
+                    return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting active sessions count: {e}")
+            return 0
+
+    async def get_replies_count_for_date(self, date_obj):
+        """Get total replies count for a specific date"""
+        try:
+            async with self.bot.db.get_db() as db:
+                async with db.execute('''
+                    SELECT COUNT(*) as count FROM replies 
+                    WHERE date = ? AND is_valid = 1
+                ''', (date_obj,)) as cursor:
+                    result = await cursor.fetchone()
+                    return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting replies count for date: {e}")
+            return 0
+
+    async def get_active_users_count_for_date(self, date_obj):
+        """Get number of users who submitted replies on a specific date"""
+        try:
+            async with self.bot.db.get_db() as db:
+                async with db.execute('''
+                    SELECT COUNT(DISTINCT session_id) as count FROM replies 
+                    WHERE date = ? AND is_valid = 1
+                ''', (date_obj,)) as cursor:
+                    result = await cursor.fetchone()
+                    return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting active users count for date: {e}")
+            return 0
+
+    async def get_user_performance_for_date(self, date_obj):
+        """Get user performance data for a specific date"""
+        try:
+            async with self.bot.db.get_db() as db:
+                async with db.execute('''
+                    SELECT u.username, u.x_username, ts.target_replies,
+                           COUNT(r.id) as todays_replies,
+                           ROUND((COUNT(r.id) * 100.0 / ts.target_replies), 1) as completion_pct
+                    FROM users u
+                    JOIN tracking_sessions ts ON u.id = ts.user_id AND ts.status = 'active'
+                    LEFT JOIN replies r ON ts.id = r.session_id AND r.date = ? AND r.is_valid = 1
+                    WHERE ts.start_date <= ? AND ts.end_date >= ?
+                    GROUP BY u.id, ts.id
+                    ORDER BY completion_pct DESC, todays_replies DESC
+                ''', (date_obj, date_obj, date_obj)) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting user performance for date: {e}")
+            return []
 
 
 async def setup(bot):
