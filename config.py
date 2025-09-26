@@ -121,6 +121,9 @@ class BotConfig:
         logging.info(f"  Database Path: {self.database_path}")
         logging.info(f"  Excel Directory: {self.excel_directory}")
 
+# Create an alias so main.py can import Config
+Config = BotConfig
+
 def get_config() -> BotConfig:
     """Get validated configuration"""
     config = BotConfig.from_environment()
