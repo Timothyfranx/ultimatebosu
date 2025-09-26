@@ -1,11 +1,10 @@
 import os
 import sqlite3
 import asyncpg
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
 import logging
-import re
-from datetime import date
+import asyncio
 
 logger = logging.getLogger('bot')
 
@@ -15,11 +14,15 @@ class DatabaseManager:
         self.pool = None
         self.db_path = os.getenv('LOCAL_DB_PATH', 'bot_database.db')
         
+        # For SQLite connection pooling to prevent "database is locked" errors
+        self._sqlite_lock = asyncio.Lock()
+        
         if self.db_type == 'postgresql':
             logger.info("Using PostgreSQL database")
         else:
             logger.info("Using SQLite database")
             self._init_sqlite()
+    
     async def initialize(self):
         """Alias for init_database to maintain compatibility with original bot code"""
         await self.init_database()
@@ -148,7 +151,7 @@ class DatabaseManager:
     
     @asynccontextmanager
     async def get_db(self):
-        """Get database connection with proper cleanup"""
+        """Get database connection with proper concurrency handling"""
         if self.db_type == 'postgresql':
             conn = await self.pool.acquire()
             try:
@@ -156,10 +159,14 @@ class DatabaseManager:
             finally:
                 await self.pool.release(conn)
         else:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row  # Similar to aiosqlite.Row
-            yield conn
-            conn.close()
+            # For SQLite, use a lock to prevent "database is locked" errors
+            async with self._sqlite_lock:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row  # Similar to aiosqlite.Row
+                try:
+                    yield conn
+                finally:
+                    conn.close()
     
     async def get_user_session(self, discord_id: int) -> Optional[Dict]:
         """Get user's active session"""
