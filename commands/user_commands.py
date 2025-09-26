@@ -33,17 +33,9 @@ class UserCommands(commands.Cog):
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
-            async with self.bot.db.get_db() as db:
-                async with db.execute(
-                        '''
-                    SELECT COUNT(r.id) as total_replies,
-                           COUNT(DISTINCT r.date) as active_days
-                    FROM replies r
-                    WHERE r.session_id = ? AND r.is_valid = 1
-                ''', (user_data['session_id'], )) as cursor:
-                    stats = await cursor.fetchone()
-                total_replies = stats['total_replies'] if stats else 0
-                active_days = stats['active_days'] if stats else 0
+            # Get stats using async method
+            total_replies = await self.bot.db.get_total_user_replies(user_data['session_id'])
+            active_days = await self.bot.db.get_active_days_count(user_data['session_id'])
 
             start_date = datetime.strptime(user_data['start_date'],
                                            '%Y-%m-%d').date()
@@ -108,19 +100,19 @@ class UserCommands(commands.Cog):
                 embed.color = discord.Color.red()
 
             excel_sent = False
-            if user_data['excel_path'] and os.path.exists(
-                    user_data['excel_path']):
+            excel_path = user_data.get('excel_path')
+            if excel_path and os.path.exists(excel_path):
                 user_display = interaction.user.display_name.replace(' ', '_')
                 filename = f"{user_display}_progress_{today.strftime('%Y%m%d')}.xlsx"
                 await interaction.followup.send(embed=embed,
                                                 file=discord.File(
-                                                    user_data['excel_path'],
+                                                    excel_path,
                                                     filename=filename),
                                                 ephemeral=True)
                 excel_sent = True
             else:
                 logger.warning(
-                    f"Excel file not found for user {interaction.user.id}: {user_data.get('excel_path')}"
+                    f"Excel file not found for user {interaction.user.id}: {excel_path}"
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 await interaction.followup.send(
@@ -151,33 +143,22 @@ class UserCommands(commands.Cog):
             await interaction.response.defer(ephemeral=True)
 
             try:
-                async with self.bot.db.get_db() as db:
-                    # Get user's active session
-                    async with db.execute('''
-                        SELECT ts.id, ts.target_replies, u.username FROM tracking_sessions ts
-                        JOIN users u ON ts.user_id = u.id
-                        WHERE u.discord_id = ? AND ts.status = 'active'
-                        ORDER BY ts.created_at DESC
-                        LIMIT 1
-                    ''', (interaction.user.id,)) as cursor:
-                        session_data = await cursor.fetchone()
+                # Get user's active session using async method
+                user_data = await self.bot.db.get_user_session(interaction.user.id)
+                if not user_data:
+                    embed = discord.Embed(
+                        title="No Active Session",
+                        description="You don't have an active tracking session.",
+                        color=discord.Color.red()
+                    )
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                    return
 
-                    if not session_data:
-                        embed = discord.Embed(
-                            title="No Active Session",
-                            description="You don't have an active tracking session.",
-                            color=discord.Color.red()
-                        )
-                        await interaction.followup.send(embed=embed, ephemeral=True)
-                        return
+                old_target = user_data['target_replies']
+                session_id = user_data['session_id']
 
-                    session_id = session_data['id']
-                    old_target = session_data['target_replies']
-
-                    # Update target
-                    await db.execute('UPDATE tracking_sessions SET target_replies = ? WHERE id = ?', 
-                                  (new_target, session_id))
-                    await db.commit()
+                # Update target using async method
+                await self.bot.db.update_session_target_replies(session_id, new_target)
 
                 embed = discord.Embed(
                     title="Target Updated",
@@ -203,34 +184,26 @@ class UserCommands(commands.Cog):
             await interaction.response.defer(ephemeral=True)
 
             try:
-                async with self.bot.db.get_db() as db:
-                    # First get the session ID
-                    async with db.execute('''
-                        SELECT ts.id FROM tracking_sessions ts
-                        JOIN users u ON ts.user_id = u.id
-                        WHERE u.discord_id = ? AND ts.status = 'active'
-                        LIMIT 1
-                    ''', (interaction.user.id,)) as cursor:
-                        session = await cursor.fetchone()
+                # Get user's active session using async method
+                user_data = await self.bot.db.get_user_session(interaction.user.id)
+                if not user_data or user_data.get('status') != 'active':
+                    embed = discord.Embed(
+                        title="No Active Session",
+                        description="You don't have an active tracking session to pause.",
+                        color=discord.Color.red()
+                    )
+                else:
+                    session_id = user_data['session_id']
+                    
+                    # Update the session using async method
+                    await self.bot.db.update_session_status(session_id, 'paused')
 
-                    if not session:
-                        embed = discord.Embed(
-                            title="No Active Session",
-                            description="You don't have an active tracking session to pause.",
-                            color=discord.Color.red()
-                        )
-                    else:
-                        # Update the session
-                        await db.execute('UPDATE tracking_sessions SET status = ? WHERE id = ?', 
-                                      ('paused', session['id']))
-                        await db.commit()
-
-                        embed = discord.Embed(
-                            title="Tracking Paused",
-                            description="Your tracking is now paused. Use `/resume_tracking` to continue.",
-                            color=discord.Color.orange()
-                        )
-                        embed.add_field(name="Note", value="You won't receive daily reminders while paused", inline=False)
+                    embed = discord.Embed(
+                        title="Tracking Paused",
+                        description="Your tracking is now paused. Use `/resume_tracking` to continue.",
+                        color=discord.Color.orange()
+                    )
+                    embed.add_field(name="Note", value="You won't receive daily reminders while paused", inline=False)
 
                 await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -249,34 +222,26 @@ class UserCommands(commands.Cog):
             await interaction.response.defer(ephemeral=True)
 
             try:
-                async with self.bot.db.get_db() as db:
-                    # First get the paused session ID
-                    async with db.execute('''
-                        SELECT ts.id FROM tracking_sessions ts
-                        JOIN users u ON ts.user_id = u.id
-                        WHERE u.discord_id = ? AND ts.status = 'paused'
-                        LIMIT 1
-                    ''', (interaction.user.id,)) as cursor:
-                        session = await cursor.fetchone()
+                # Get user's paused session using async method
+                user_data = await self.bot.db.get_user_session_by_status(interaction.user.id, 'paused')
+                if not user_data:
+                    embed = discord.Embed(
+                        title="No Paused Session",
+                        description="You don't have a paused tracking session to resume.",
+                        color=discord.Color.red()
+                    )
+                else:
+                    session_id = user_data['session_id']
+                    
+                    # Update the session using async method
+                    await self.bot.db.update_session_status(session_id, 'active')
 
-                    if not session:
-                        embed = discord.Embed(
-                            title="No Paused Session",
-                            description="You don't have a paused tracking session to resume.",
-                            color=discord.Color.red()
-                        )
-                    else:
-                        # Update the session
-                        await db.execute('UPDATE tracking_sessions SET status = ? WHERE id = ?', 
-                                      ('active', session['id']))
-                        await db.commit()
-
-                        embed = discord.Embed(
-                            title="Tracking Resumed",
-                            description="Your tracking is now active again. Welcome back!",
-                            color=discord.Color.green()
-                        )
-                        embed.add_field(name="Note", value="Daily reminders will resume tomorrow", inline=False)
+                    embed = discord.Embed(
+                        title="Tracking Resumed",
+                        description="Your tracking is now active again. Welcome back!",
+                        color=discord.Color.green()
+                    )
+                    embed.add_field(name="Note", value="Daily reminders will resume tomorrow", inline=False)
 
                 await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -288,6 +253,69 @@ class UserCommands(commands.Cog):
                     color=discord.Color.red()
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # Additional methods that would need to be implemented in DatabaseManager
+    async def get_total_user_replies(self, session_id: int) -> int:
+        """Get total replies for a user session"""
+        try:
+            async with self.bot.db.get_db() as db:
+                async with db.execute('''
+                    SELECT COUNT(r.id) as total_replies
+                    FROM replies r
+                    WHERE r.session_id = ? AND r.is_valid = 1
+                ''', (session_id,)) as cursor:
+                    result = await cursor.fetchone()
+                    return result['total_replies'] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting total user replies: {e}")
+            return 0
+
+    async def get_active_days_count(self, session_id: int) -> int:
+        """Get count of active days for a user session"""
+        try:
+            async with self.bot.db.get_db() as db:
+                async with db.execute('''
+                    SELECT COUNT(DISTINCT r.date) as active_days
+                    FROM replies r
+                    WHERE r.session_id = ? AND r.is_valid = 1
+                ''', (session_id,)) as cursor:
+                    result = await cursor.fetchone()
+                    return result['active_days'] if result else 0
+        except Exception as e:
+            logger.error(f"Error getting active days count: {e}")
+            return 0
+
+    async def update_session_target_replies(self, session_id: int, new_target: int):
+        """Update session target replies"""
+        try:
+            async with self.bot.db.get_db() as db:
+                await db.execute('UPDATE tracking_sessions SET target_replies = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', 
+                              (new_target, session_id))
+                await db.commit()
+        except Exception as e:
+            logger.error(f"Error updating session target replies: {e}")
+            raise
+
+    async def get_user_session_by_status(self, discord_id: int, status: str):
+        """Get user session by specific status"""
+        try:
+            async with self.bot.db.get_db() as db:
+                async with db.execute('''
+                    SELECT u.id, u.username, u.x_username, u.channel_id,
+                           ts.id as session_id, ts.target_replies, ts.start_date, 
+                           ts.end_date, ts.excel_path, ts.status
+                    FROM users u
+                    JOIN tracking_sessions ts ON u.id = ts.user_id
+                    WHERE u.discord_id = ? AND ts.status = ?
+                    ORDER BY ts.created_at DESC
+                    LIMIT 1
+                ''', (discord_id, status)) as cursor:
+                    row = await cursor.fetchone()
+                    return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error getting user session by status: {e}")
+            return None
+
 
 async def setup(bot):
     """Required function to add this cog to the bot"""
