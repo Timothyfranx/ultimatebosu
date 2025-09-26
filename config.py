@@ -14,7 +14,7 @@ logging.basicConfig(
 
 @dataclass
 class BotConfig:
-    """Configuration management for Replit environment"""
+    """Configuration management for Replit environment with PostgreSQL/SQLite support"""
 
     # Required settings
     discord_token: str
@@ -27,8 +27,11 @@ class BotConfig:
     admin_category_name: str = "✧ Dictators"
     admin_channel_name: str = "innerchambers"
 
-    # Database and file paths (Replit-specific)
-    database_path: str = "reply_tracker.db"
+    # Database configuration - Updated for PostgreSQL/SQLite compatibility
+    database_url: Optional[str] = None  # For PostgreSQL (Railway)
+    sqlite_database_path: str = "reply_tracker.db"  # For SQLite (local)
+    
+    # Excel and file paths
     excel_directory: str = "excel_files"
 
     # Bot settings
@@ -58,6 +61,10 @@ class BotConfig:
             except ValueError:
                 logging.warning("Invalid GUILD_ID format, ignoring")
 
+        # Get database configuration
+        database_url = os.getenv('DATABASE_URL')  # PostgreSQL for Railway
+        sqlite_database_path = os.getenv('SQLITE_DATABASE_PATH', 'reply_tracker.db')
+
         return cls(
             discord_token=discord_token,
             guild_id=guild_id,
@@ -66,7 +73,28 @@ class BotConfig:
             tracking_category_name=os.getenv('TRACKING_CATEGORY', 'Light Tracking'),
             admin_category_name=os.getenv('ADMIN_CATEGORY', '✧ Dictators'),
             admin_channel_name=os.getenv('ADMIN_CHANNEL', 'innerchambers'),
+            database_url=database_url,
+            sqlite_database_path=sqlite_database_path,
+            excel_directory=os.getenv('EXCEL_DIRECTORY', 'excel_files'),
         )
+
+    @property
+    def is_postgresql(self) -> bool:
+        """Check if using PostgreSQL database"""
+        return bool(self.database_url)
+
+    @property
+    def is_sqlite(self) -> bool:
+        """Check if using SQLite database"""
+        return not self.is_postgresql
+
+    @property
+    def database_path(self) -> str:
+        """Get the appropriate database path/URL"""
+        if self.is_postgresql:
+            return self.database_url
+        else:
+            return self.sqlite_database_path
 
     def validate(self) -> bool:
         """Validate critical configuration"""
@@ -89,7 +117,8 @@ class BotConfig:
         logging.info(f"  Admin Role: {self.admin_role_name}")
         logging.info(f"  Tracking Category: {self.tracking_category_name}")
         logging.info(f"  Admin Category: {self.admin_category_name}")
-        logging.info(f"  Database: {self.database_path}")
+        logging.info(f"  Database Type: {'PostgreSQL' if self.is_postgresql else 'SQLite'}")
+        logging.info(f"  Database Path: {self.database_path}")
         logging.info(f"  Excel Directory: {self.excel_directory}")
 
 def get_config() -> BotConfig:
