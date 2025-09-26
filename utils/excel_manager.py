@@ -17,19 +17,8 @@ class CombinedExcelReportGenerator:
     async def generate_combined_report(self) -> Optional[str]:
         """Generate a single Excel file with multiple sheets for all users"""
         try:
-            async with self.db.get_db() as db:
-                async with db.execute('''
-                    SELECT u.id, u.discord_id, u.username, u.x_username, 
-                           ts.id as session_id, ts.target_replies, ts.start_date, ts.end_date,
-                           ts.excel_path, COUNT(r.id) as total_replies
-                    FROM users u
-                    JOIN tracking_sessions ts ON u.id = ts.user_id
-                    LEFT JOIN replies r ON ts.id = r.session_id AND r.is_valid = 1
-                    WHERE ts.status = 'active'
-                    GROUP BY u.id, ts.id
-                    ORDER BY u.username
-                ''') as cursor:
-                    users_data = await cursor.fetchall()
+            # Get all active users using async method
+            users_data = await self.db.get_all_active_users_with_stats()
 
             if not users_data:
                 return None
@@ -76,41 +65,48 @@ class CombinedExcelReportGenerator:
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
         for row_idx, user_data in enumerate(users_data, 4):
-            start_date = datetime.strptime(user_data['start_date'], '%Y-%m-%d').date()
-            end_date = datetime.strptime(user_data['end_date'], '%Y-%m-%d').date()
-            total_days = (end_date - start_date).days + 1
-            today = date.today()
+            start_date_str = user_data.get('start_date', '')
+            end_date_str = user_data.get('end_date', '')
+            
+            if start_date_str and end_date_str:
+                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+                total_days = (end_date - start_date).days + 1
+                today = date.today()
 
-            if today < start_date:
-                days_elapsed = 0
-                status = "Not Started"
-            elif today > end_date:
-                days_elapsed = total_days
-                status = "Completed"
-            else:
-                days_elapsed = (today - start_date).days + 1
-                status = "Active"
+                if today < start_date:
+                    days_elapsed = 0
+                    status = "Not Started"
+                elif today > end_date:
+                    days_elapsed = total_days
+                    status = "Completed"
+                else:
+                    days_elapsed = (today - start_date).days + 1
+                    status = "Active"
 
-            expected_replies = days_elapsed * user_data['target_replies']
-            completion_pct = (user_data['total_replies'] / expected_replies * 100) if expected_replies > 0 else 0
-            avg_per_day = user_data['total_replies'] / days_elapsed if days_elapsed > 0 else 0
+                target_replies = user_data.get('target_replies', 0)
+                total_replies = user_data.get('total_replies', 0)
+                
+                expected_replies = days_elapsed * target_replies
+                completion_pct = (total_replies / expected_replies * 100) if expected_replies > 0 else 0
+                avg_per_day = total_replies / days_elapsed if days_elapsed > 0 else 0
 
-            sheet.cell(row=row_idx, column=1).value = user_data['username']
-            sheet.cell(row=row_idx, column=2).value = f"@{user_data['x_username']}"
-            sheet.cell(row=row_idx, column=3).value = user_data['target_replies']
-            sheet.cell(row=row_idx, column=4).value = f"{start_date} to {end_date}"
-            sheet.cell(row=row_idx, column=5).value = user_data['total_replies']
-            sheet.cell(row=row_idx, column=6).value = round(avg_per_day, 1)
-            sheet.cell(row=row_idx, column=7).value = f"{completion_pct:.1f}%"
-            sheet.cell(row=row_idx, column=8).value = status
+                sheet.cell(row=row_idx, column=1).value = user_data.get('username', 'Unknown')
+                sheet.cell(row=row_idx, column=2).value = f"@{user_data.get('x_username', 'N/A')}"
+                sheet.cell(row=row_idx, column=3).value = target_replies
+                sheet.cell(row=row_idx, column=4).value = f"{start_date} to {end_date}"
+                sheet.cell(row=row_idx, column=5).value = total_replies
+                sheet.cell(row=row_idx, column=6).value = round(avg_per_day, 1)
+                sheet.cell(row=row_idx, column=7).value = f"{completion_pct:.1f}%"
+                sheet.cell(row=row_idx, column=8).value = status
 
-            completion_cell = sheet.cell(row=row_idx, column=7)
-            if completion_pct >= 100:
-                completion_cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-            elif completion_pct >= 80:
-                completion_cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-            else:
-                completion_cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+                completion_cell = sheet.cell(row=row_idx, column=7)
+                if completion_pct >= 100:
+                    completion_cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+                elif completion_pct >= 80:
+                    completion_cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+                else:
+                    completion_cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
 
         for column in sheet.columns:
             max_length = 0
@@ -126,59 +122,55 @@ class CombinedExcelReportGenerator:
 
     async def _create_user_sheet(self, workbook, user_data: Dict):
         try:
-            safe_name = "".join(c for c in user_data['username'] if c.isalnum() or c in (' ', '-', '_'))[:25]
+            safe_name = "".join(c for c in user_data.get('username', 'Unknown') if c.isalnum() or c in (' ', '-', '_'))[:25]
             sheet_name = f"{safe_name}"
             sheet = workbook.create_sheet(sheet_name)
 
-            async with self.db.get_db() as db:
-                async with db.execute('''
-                    SELECT date, COUNT(*) as replies_count,
-                           GROUP_CONCAT(url, '||') as urls
-                    FROM replies 
-                    WHERE session_id = ? AND is_valid = 1
-                    GROUP BY date
-                    ORDER BY date
-                ''', (user_data['session_id'],)) as cursor:
-                    reply_data = await cursor.fetchall()
+            # Get user's reply data using async method
+            reply_data = await self.db.get_user_reply_summary(user_data.get('session_id', 0))
 
-            start_date = datetime.strptime(user_data['start_date'], '%Y-%m-%d').date()
-            end_date = datetime.strptime(user_data['end_date'], '%Y-%m-%d').date()
-            dates = []
-            current_date = start_date
-            while current_date <= end_date:
-                dates.append(current_date)
-                current_date = current_date + timedelta(days=1)
+            start_date_str = user_data.get('start_date', '')
+            end_date_str = user_data.get('end_date', '')
+            
+            if start_date_str and end_date_str:
+                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+                dates = []
+                current_date = start_date
+                while current_date <= end_date:
+                    dates.append(current_date)
+                    current_date = current_date + timedelta(days=1)
 
-            sheet.merge_cells('A1:C1')
-            info_cell = sheet['A1']
-            info_cell.value = f"{user_data['username']} (@{user_data['x_username']}) - Target: {user_data['target_replies']}/day"
-            info_cell.font = Font(size=12, bold=True)
-            info_cell.fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+                sheet.merge_cells('A1:C1')
+                info_cell = sheet['A1']
+                info_cell.value = f"{user_data.get('username', 'Unknown')} (@{user_data.get('x_username', 'N/A')}) - Target: {user_data.get('target_replies', 0)}/day"
+                info_cell.font = Font(size=12, bold=True)
+                info_cell.fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
 
-            sheet.cell(row=3, column=1, value="Reply #").font = Font(bold=True)
-            for col_idx, date_obj in enumerate(dates[:30], 2):
-                cell = sheet.cell(row=3, column=col_idx)
-                cell.value = date_obj.strftime('%m-%d')
-                cell.font = Font(bold=True)
-                sheet.column_dimensions[get_column_letter(col_idx)].width = 8
-
-            reply_dict = {row['date']: row for row in reply_data}
-
-            for reply_num in range(1, min(user_data['target_replies'] + 1, 51)):
-                sheet.cell(row=reply_num + 3, column=1, value=reply_num)
-
+                sheet.cell(row=3, column=1, value="Reply #").font = Font(bold=True)
                 for col_idx, date_obj in enumerate(dates[:30], 2):
-                    date_str = date_obj.strftime('%Y-%m-%d')
-                    cell = sheet.cell(row=reply_num + 3, column=col_idx)
-                    if date_str in reply_dict:
-                        urls = reply_dict[date_str]['urls'].split('||') if reply_dict[date_str]['urls'] else []
-                        if len(urls) >= reply_num:
-                            cell.value = "✓"
-                            cell.hyperlink = urls[reply_num - 1]
-                            cell.font = Font(color="0000FF")
-                            cell.fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
+                    cell = sheet.cell(row=3, column=col_idx)
+                    cell.value = date_obj.strftime('%m-%d')
+                    cell.font = Font(bold=True)
+                    sheet.column_dimensions[get_column_letter(col_idx)].width = 8
+
+                reply_dict = {row.get('date', ''): row for row in reply_data}
+
+                target_replies = user_data.get('target_replies', 0)
+                for reply_num in range(1, min(target_replies + 1, 51)):
+                    sheet.cell(row=reply_num + 3, column=1, value=reply_num)
+
+                    for col_idx, date_obj in enumerate(dates[:30], 2):
+                        date_str = date_obj.strftime('%Y-%m-%d')
+                        cell = sheet.cell(row=reply_num + 3, column=col_idx)
+                        if date_str in reply_dict:
+                            urls = reply_dict[date_str].get('urls', '').split('||') if reply_dict[date_str].get('urls') else []
+                            if len(urls) >= reply_num:
+                                cell.value = "✓"
+                                cell.font = Font(color="0000FF")
+                                cell.fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
         except Exception as e:
-            logger.error(f"Error creating user sheet for {user_data['username']}: {e}")
+            logger.error(f"Error creating user sheet for {user_data.get('username', 'Unknown')}: {e}")
 
     async def _create_analytics_sheet(self, sheet, users_data: List[Dict]):
         sheet.merge_cells('A1:D1')
@@ -189,8 +181,8 @@ class CombinedExcelReportGenerator:
 
         row = 3
         total_users = len(users_data)
-        total_replies = sum(user['total_replies'] for user in users_data)
-        avg_target = sum(user['target_replies'] for user in users_data) / total_users if total_users > 0 else 0
+        total_replies = sum(user.get('total_replies', 0) for user in users_data)
+        avg_target = sum(user.get('target_replies', 0) for user in users_data) / total_users if total_users > 0 else 0
 
         stats = [
             ("Total Active Users", total_users),
@@ -209,11 +201,51 @@ class CombinedExcelReportGenerator:
 
         row += 2
 
-        sorted_users = sorted(users_data, key=lambda x: x['total_replies'], reverse=True)
+        sorted_users = sorted(users_data, key=lambda x: x.get('total_replies', 0), reverse=True)
         sheet.cell(row=row, column=1, value="Top Performers").font = Font(bold=True, size=12)
         row += 1
 
         for i, user in enumerate(sorted_users[:5], 1):
-            sheet.cell(row=row, column=1, value=f"{i}. {user['username']}")
-            sheet.cell(row=row, column=2, value=f"{user['total_replies']} replies")
+            sheet.cell(row=row, column=1, value=f"{i}. {user.get('username', 'Unknown')}")
+            sheet.cell(row=row, column=2, value=f"{user.get('total_replies', 0)} replies")
             row += 1
+
+    # Additional methods that need to be implemented in DatabaseManager
+    async def get_all_active_users_with_stats(self) -> List[Dict]:
+        """Get all active users with their statistics"""
+        try:
+            async with self.db.get_db() as db:
+                async with db.execute('''
+                    SELECT u.id, u.discord_id, u.username, u.x_username, 
+                           ts.id as session_id, ts.target_replies, ts.start_date, ts.end_date,
+                           ts.excel_path, COUNT(r.id) as total_replies
+                    FROM users u
+                    JOIN tracking_sessions ts ON u.id = ts.user_id
+                    LEFT JOIN replies r ON ts.id = r.session_id AND r.is_valid = 1
+                    WHERE ts.status = 'active'
+                    GROUP BY u.id, ts.id
+                    ORDER BY u.username
+                ''') as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting all active users with stats: {e}")
+            return []
+
+    async def get_user_reply_summary(self, session_id: int) -> List[Dict]:
+        """Get user's reply summary grouped by date"""
+        try:
+            async with self.db.get_db() as db:
+                async with db.execute('''
+                    SELECT date, COUNT(*) as replies_count,
+                           GROUP_CONCAT(url, '||') as urls
+                    FROM replies 
+                    WHERE session_id = ? AND is_valid = 1
+                    GROUP BY date
+                    ORDER BY date
+                ''', (session_id,)) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting user reply summary for session {session_id}: {e}")
+            return []
