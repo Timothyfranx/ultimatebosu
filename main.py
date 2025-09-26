@@ -14,7 +14,7 @@ logging.basicConfig(
 # Import your components
 from config import get_config
 from bot import ReplyTrackerBot
-from database import create_database_manager
+from database import DatabaseManager
 
 
 async def main():
@@ -23,7 +23,7 @@ async def main():
         config = get_config()
 
         # Create database manager (will auto-detect PostgreSQL from DATABASE_URL)
-        db_manager = create_database_manager()
+        db_manager = DatabaseManager()
 
         # Initialize bot with Railway database
         bot = ReplyTrackerBot(config)
