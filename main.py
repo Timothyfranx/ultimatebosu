@@ -14,7 +14,7 @@ logging.basicConfig(
 # Import your components
 from config import get_config
 from bot import ReplyTrackerBot
-from database import DatabaseManager
+db_manager = DatabaseManager(config.database_path)
 
 
 async def main():
