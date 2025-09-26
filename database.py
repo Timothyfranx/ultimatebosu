@@ -20,6 +20,9 @@ class DatabaseManager:
         else:
             logger.info("Using SQLite database")
             self._init_sqlite()
+    async def initialize(self):
+        """Alias for init_database to maintain compatibility with original bot code"""
+        await self.init_database()
     
     async def init_database(self):
         """Initialize the database connection and tables"""
