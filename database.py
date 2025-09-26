@@ -1,7 +1,7 @@
 import os
 import sqlite3
 import asyncpg
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, lists
 from contextlib import asynccontextmanager
 import logging
 import asyncio
