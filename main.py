@@ -1,48 +1,40 @@
-"""
-Discord Reply Tracker Bot - Main Entry Point for Replit
-"""
-
 import asyncio
 import logging
 import os
 import sys
 from pathlib import Path
 
-# Configure logging for output visibility
+# Configure logging for Railway
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout  # Railway captures stdout
+)
 
-# Add current directory to Python path
-sys.path.insert(0, str(Path(__file__).parent))
-
-# Import configuration first
+# Import your components
 from config import get_config
-
-# Start keep-alive server immediately
-from keep_alive import keep_alive
-
-keep_alive()
-
-# Import bot components
 from bot import ReplyTrackerBot
+from database_v2 import create_database_manager
 
 
 async def main():
-    """Main async function to run the bot"""
+    """Main function optimized for Railway"""
     try:
-        # Get configuration
         config = get_config()
+
+        # Create database manager (will auto-detect PostgreSQL from DATABASE_URL)
+        db_manager = create_database_manager()
+
+        # Initialize bot with Railway database
+        bot = ReplyTrackerBot(config)
+        bot.db = db_manager  # Override with Railway database
 
         # Create necessary directories
         Path(config.excel_directory).mkdir(exist_ok=True)
 
-        # Initialize and run bot
-        bot = ReplyTrackerBot(config)
-
-        logging.info("Starting Discord Reply Tracker Bot...")
+        logging.info("Starting Discord Reply Tracker Bot on Railway...")
         logging.info(f"Python version: {sys.version}")
-        logging.info(f"Working directory: {os.getcwd()}")
+        logging.info(f"Database type: {db_manager.config.db_type.value}")
 
         async with bot:
             await bot.start(config.discord_token)
@@ -51,26 +43,15 @@ async def main():
         logging.info("Bot stopped by user")
     except Exception as e:
         logging.error(f"Fatal error: {e}", exc_info=True)
-        # Clean shutdown for production
-        sys.exit(1)
-
-
-def run_bot():
-    """Run the bot with proper error handling for Replit"""
-    try:
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        loop.run_until_complete(main())
-    except KeyboardInterrupt:
-        logging.info("Bot shutdown requested")
-    except Exception as e:
-        logging.error(f"Critical error in main loop: {e}", exc_info=True)
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    run_bot()
+    # Railway compatibility
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Bot shutdown requested")
+    except Exception as e:
+        logging.error(f"Critical error: {e}", exc_info=True)
+        sys.exit(1)
